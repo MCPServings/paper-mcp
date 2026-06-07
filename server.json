@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.MCPServings/paper-mcp",
+  "title": "Paper Search (arXiv + Semantic Scholar + OpenAlex)",
+  "description": "Paper search, arXiv full-text reading, and citation graphs over arXiv, Semantic Scholar, OpenAlex.",
+  "repository": {
+    "url": "https://github.com/MCPServings/paper-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "websiteUrl": "https://latex-tools.online/mcp",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://latex-tools.online/mcp"
+    }
+  ]
+}
