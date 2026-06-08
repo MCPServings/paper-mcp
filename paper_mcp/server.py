@@ -11,16 +11,22 @@ Tools (baseline):
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import threading
+import time
+from collections import defaultdict, deque
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
+from .aggregate import fuse
 from .models import Paper
 from .sources import DEFAULT_SOURCE, get_source, list_sources
+from .sources import recognize
 
 HOST = os.getenv("PAPER_MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("PAPER_MCP_PORT", "9400"))
@@ -34,6 +40,12 @@ _INSTRUCTIONS = (
     "  1. `search_papers(query=..., source='arxiv', max_results=10, "
     "sort_by='relevance')` to find papers. For arxiv, `query` accepts plain "
     "text or field syntax like `ti:`, `au:`, `cat:cs.CL`, `abs:` + AND/OR.\n"
+    "  1b. `search_all(query=..., max_results=10)` searches ALL three corpora "
+    "at once, de-duplicates the same work across them (by DOI/title) and "
+    "re-ranks with Reciprocal Rank Fusion; each hit carries `sources` (who "
+    "found it) and an `ids` map you can hand to get_paper/read_paper. Use it "
+    "as the default broad search; use `search_papers` when you want one "
+    "specific corpus or arxiv field syntax.\n"
     "  2. `get_paper(paper_id=..., source='arxiv')` for one paper's full "
     "record. For s2, id accepts S2 id / `DOI:` / `ARXIV:` / `CorpusId:`.\n"
     "  3. `search_by_author(author=..., source='arxiv')` newest first.\n"
@@ -45,6 +57,11 @@ _INSTRUCTIONS = (
     "returns the raw LaTeXML page, 'latex' returns the original manuscript "
     "source.\n"
     "  7. `list_paper_sources()` available corpora.\n\n"
+    "Image → LaTeX (turn a formula or table image back into LaTeX, e.g. a "
+    "figure cropped from a paper; no vision model needed on your side):\n"
+    "  • `recognize_formula(image_url=... or image_base64=...)` → LaTeX\n"
+    "  • `recognize_table(image_url=... or image_base64=...)` → LaTeX tabular\n"
+    "  • `list_ocr_models()` available OCR models\n\n"
     "Semantic Scholar capabilities (the full S2 API surface — citation "
     "graph, authors, recommendations, full-text snippets, bulk datasets):\n"
     "  • `get_paper_citations` / `get_paper_references` / `get_paper_authors`\n"
@@ -81,9 +98,74 @@ mcp = FastMCP(
     transport_security=_TS,
 )
 
+# Per-IP rate limit for the MCP endpoint. MCP sessions are chatty (initialize +
+# tools/list + many tools/call, each a separate JSON-RPC POST), so the hourly
+# budget is generous: enough for several deep agent sessions, while blocking
+# scripted hammering of the shared inference / upstream backends.
+MCP_MAX_PER_HOUR = int(os.getenv("MCP_MAX_PER_HOUR", "300"))
+MCP_RATE_WINDOW_SEC = 3600.0
+
+
+class _RateLimitMiddleware:
+    """Pure-ASGI per-IP rate limit for the MCP endpoint.
+
+    Counts JSON-RPC POSTs per client IP in a sliding hourly window and rejects
+    with HTTP 429 once the limit is exceeded. Implemented as pure ASGI (not
+    Starlette BaseHTTPMiddleware) so it never buffers the streamable-HTTP / SSE
+    response body.
+    """
+
+    def __init__(self, app, *, max_per_hour: int, window: float = MCP_RATE_WINDOW_SEC):
+        self.app = app
+        self.max_per_hour = max_per_hour
+        self.window = window
+        self._lock = threading.Lock()
+        self._buckets: dict = defaultdict(lambda: deque(maxlen=max_per_hour * 2 + 32))
+
+    @staticmethod
+    def _client_ip(scope) -> str:
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                   for k, v in scope.get("headers", [])}
+        xri = headers.get("x-real-ip")
+        if xri:
+            return xri.strip()
+        xff = headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+        client = scope.get("client")
+        return client[0] if client else "0.0.0.0"
+
+    def _allow(self, ip: str) -> bool:
+        now = time.time()
+        with self._lock:
+            dq = self._buckets[ip]
+            while dq and now - dq[0] > self.window:
+                dq.popleft()
+            if len(dq) >= self.max_per_hour:
+                return False
+            dq.append(now)
+            return True
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+        if not self._allow(self._client_ip(scope)):
+            body = (b'{"jsonrpc":"2.0","error":{"code":-32029,'
+                    b'"message":"rate limit exceeded"},"id":null}')
+            await send({"type": "http.response.start", "status": 429,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"retry-after", b"3600")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
 # arXiv field prefixes; if the query already uses one we pass it through as-is.
 _FIELD_RE = re.compile(r"\b(ti|au|abs|co|jr|cat|rn|id|all):", re.IGNORECASE)
 _ABSTRACT_PREVIEW = 320
+
+# Corpora fused by `search_all` when the caller doesn't name specific ones.
+_AGG_SOURCES = ("arxiv", "semanticscholar", "openalex")
 
 
 def _build_query(query: str, source: str = DEFAULT_SOURCE) -> str:
@@ -153,6 +235,96 @@ async def search_papers(
         "sort_by": sort_by,
         "count": len(papers),
         "results": [_hit(p) for p in papers],
+    }
+
+
+def _merged_hit(group: dict) -> dict:
+    """Render one fused group (rep Paper + cross-source meta) as a hit."""
+    p: Paper = group["rep"]
+    summary = p.summary
+    if len(summary) > _ABSTRACT_PREVIEW:
+        summary = summary[:_ABSTRACT_PREVIEW].rstrip() + "…"
+    hit = {
+        "title": p.title,
+        "authors": p.authors[:8] + (["et al."] if len(p.authors) > 8 else []),
+        "published": p.published[:10],
+        "categories": p.categories,
+        "url": p.url,
+        "abstract_preview": summary,
+        "sources": group["sources"],
+        "ids": group["ids"],
+        "agreement": group["agreement"],
+        "score": group["score"],
+    }
+    if p.doi:
+        hit["doi"] = p.doi
+    if group["citationCount"] is not None:
+        hit["citationCount"] = group["citationCount"]
+    return hit
+
+
+@mcp.tool(description="Aggregated search across arXiv, Semantic Scholar and "
+          "OpenAlex at once. Fans out concurrently, de-duplicates the same "
+          "work across corpora (by DOI or title) and re-ranks with Reciprocal "
+          "Rank Fusion, so papers found by several sources rank highest. Each "
+          "hit lists which `sources` found it and an `ids` map "
+          "({source: id}) you can pass to get_paper / read_paper / the "
+          "citation tools. Prefer this over search_papers for a broad lookup.")
+async def search_all(
+    query: str,
+    max_results: int = 10,
+    sources: str = "arxiv,semanticscholar,openalex",
+    per_source: int = 0,
+) -> dict:
+    """Search several corpora at once and return one fused, de-duplicated list.
+
+    Args:
+        query: Plain text. Field syntax (ti:/au:/cat:) only affects arXiv.
+        max_results: 1–50 merged results to return.
+        sources: Comma/space separated corpora to fuse (names or aliases:
+            arxiv, semanticscholar/s2, openalex/oa). Defaults to all three.
+        per_source: How many raw hits to pull from each corpus before fusing.
+            0 (default) uses max(max_results, 10) to give the ranker material.
+    """
+    max_results = max(1, min(max_results, 50))
+    wanted = [s for s in re.split(r"[,\s]+", sources.strip()) if s] or list(_AGG_SOURCES)
+    fetch_n = per_source if per_source > 0 else max(max_results, 10)
+
+    async def _one(name: str):
+        try:
+            src = get_source(name)
+        except ValueError as exc:
+            return name, exc
+        try:
+            papers = await src.search(
+                _build_query(query, src.name), max_results=fetch_n, sort_by="relevance"
+            )
+            return src.name, papers
+        except (httpx.HTTPError, ValueError) as exc:
+            return src.name, exc
+
+    pairs = await asyncio.gather(*(_one(s) for s in wanted))
+
+    results: dict[str, list[Paper]] = {}
+    errors: dict[str, str] = {}
+    for name, res in pairs:
+        if isinstance(res, Exception):
+            errors[name] = f"{type(res).__name__}: {res}"
+        else:
+            results[name] = res
+
+    if not results:
+        return {"query": query, "sources_queried": wanted,
+                "errors": errors, "count": 0, "results": []}
+
+    fused = fuse(results)
+    return {
+        "query": query,
+        "sources_queried": sorted(results),
+        "errors": errors,
+        "total_merged": len(fused),
+        "count": min(len(fused), max_results),
+        "results": [_merged_hit(g) for g in fused[:max_results]],
     }
 
 
@@ -244,6 +416,56 @@ async def read_paper(
 @mcp.tool(description="List available paper corpora.")
 def list_paper_sources() -> dict:
     return {"sources": list_sources(), "default": DEFAULT_SOURCE, "version": __version__}
+
+
+# ---------------------------------------------------------------------------
+# Formula / table image recognition (free companion to the paper pipeline).
+# When an agent has a cropped equation or table image — e.g. a figure from a
+# paper it is reading — these turn the raster back into LaTeX without needing
+# its own vision model. Backed by the co-located recognize service.
+# Image input follows the de-facto MCP OCR convention: image_url OR image_base64.
+# ---------------------------------------------------------------------------
+
+@mcp.tool(description="Recognize a math formula from an image and return LaTeX. "
+          "Provide image_url (downloaded server-side) OR image_base64. model: "
+          "deepseek-ocr (default), paddleocr-vl, or texify. Returns "
+          "{latex, model, elapsed_ms}.")
+async def recognize_formula(
+    image_url: str = "", image_base64: str = "", model: str = "deepseek-ocr"
+) -> dict:
+    """Image → LaTeX for a single formula. Give image_url or image_base64."""
+    try:
+        return await recognize.recognize_formula(
+            image_url=image_url or None,
+            image_base64=image_base64 or None,
+            model=model,
+        )
+    except recognize.RecognizeError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(description="Recognize a table from an image and return LaTeX tabular "
+          "code. Provide image_url OR image_base64. model: deepseek-ocr "
+          "(default), paddleocr-vl, or texify. Returns {latex, model, "
+          "elapsed_ms}.")
+async def recognize_table(
+    image_url: str = "", image_base64: str = "", model: str = "deepseek-ocr"
+) -> dict:
+    """Image → LaTeX tabular for a table. Give image_url or image_base64."""
+    try:
+        return await recognize.recognize_table(
+            image_url=image_url or None,
+            image_base64=image_base64 or None,
+            model=model,
+        )
+    except recognize.RecognizeError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(description="List the OCR models available for recognize_formula / "
+          "recognize_table.")
+def list_ocr_models() -> dict:
+    return {"models": recognize.list_models(), "default": "deepseek-ocr"}
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +910,11 @@ async def list_openalex_topics(query: str, max_results: int = 15) -> dict:
 
 
 def main() -> None:
-    mcp.run(transport="streamable-http")
+    import uvicorn
+
+    app = mcp.streamable_http_app()
+    app.add_middleware(_RateLimitMiddleware, max_per_hour=MCP_MAX_PER_HOUR)
+    uvicorn.run(app, host=HOST, port=PORT)
 
 
 if __name__ == "__main__":
