@@ -2,21 +2,24 @@
 
 <!-- mcp-name: io.github.MCPServings/paper-mcp -->
 
-Remotely-callable **MCP server for academic paper search & full-text retrieval**, served at `https://latex-tools.online/mcp`.
+Remotely-callable **MCP server for academic paper search, full-text retrieval & image→LaTeX**, served at `https://latex-tools.online/mcp`.
 
 Three corpora behind one normalized interface:
 - **`arxiv`** (default) — search, metadata, and **full-text** (HTML / markdown / LaTeX source)
 - **`semanticscholar`** (alias `s2`) — the full S2 API surface: citation graph, authors, recommendations, full-text snippets, bulk datasets
 - **`openalex`** (alias `oa`) — 316M all-field works: citation graph, authors with h-index, institutions, topics, influence metrics
 
+Plus a **unified `search_all`** that fuses all three corpora, and **image→LaTeX** OCR tools.
+
 ---
 
-## Tools (25)
+## Tools (37)
 
-### Generic / source-agnostic (7)
+### Generic / source-agnostic (8)
 | Tool | Purpose |
 |---|---|
-| `search_papers(query, source='arxiv', max_results=10, sort_by='relevance')` | Search. arXiv `query` accepts plain text or field syntax (`ti:` `au:` `cat:cs.CL` `abs:` + AND/OR). |
+| **`search_all(query, max_results=10, sources='arxiv,semanticscholar,openalex')`** | **Unified search.** Fans out to all three corpora concurrently, de-duplicates the same work (by DOI/title) and re-ranks with Reciprocal Rank Fusion. Each hit carries `sources` (who found it) + an `ids` map for follow-up calls. Prefer this for broad lookups. |
+| `search_papers(query, source='arxiv', max_results=10, sort_by='relevance')` | Single-corpus search. arXiv `query` accepts plain text or field syntax (`ti:` `au:` `cat:cs.CL` `abs:` + AND/OR). |
 | `get_paper(paper_id, source='arxiv')` | One paper's full record. S2 id accepts S2 id / `DOI:` / `ARXIV:` / `CorpusId:`. |
 | `search_by_author(author, source='arxiv')` | Papers by author, newest first. |
 | `list_recent(category, source='arxiv')` | Latest in a category (arXiv code or S2 field of study). |
@@ -25,6 +28,19 @@ Three corpora behind one normalized interface:
 | `list_paper_sources()` | Available corpora. |
 
 `read_paper` fetch chain: `arxiv.org/html/{id}` → `ar5iv` fallback (markdown/html), or `arxiv.org/e-print/{id}` tarball main `.tex` (latex). Formulas are recovered from the LaTeXML `alttext` invariant.
+
+### Image → LaTeX (3)
+Turn a formula or table image back into LaTeX (e.g. a figure cropped from a paper) without needing your own vision model. Backed by the co-located recognize service (PaddleOCR-VL / DeepSeek-OCR / texify).
+| Tool | Purpose |
+|---|---|
+| `recognize_formula(image_url=... or image_base64=..., model='deepseek-ocr')` | Formula image → LaTeX. `image_url` is downloaded server-side (with SSRF guards). Returns `{latex, model, elapsed_ms}`. |
+| `recognize_table(image_url=... or image_base64=..., model='deepseek-ocr')` | Table image → LaTeX `tabular`. |
+| `list_ocr_models()` | Available OCR models (`deepseek-ocr`, `paddleocr-vl`, `texify`). |
+
+### OpenAlex (8)
+- **Works:** `get_openalex_work` · `get_openalex_citations` · `get_openalex_references` · `search_openalex_works` (filters: year range, open-access, min-citations, institution)
+- **Authors/Institutions:** `search_openalex_authors` · `search_openalex_institutions`
+- **Analytics:** `get_openalex_trends` · `list_openalex_topics`
 
 ### Semantic Scholar (18)
 - **Graph:** `get_paper_citations` · `get_paper_references` · `get_paper_authors`
@@ -42,10 +58,13 @@ Three corpora behind one normalized interface:
 paper_mcp/
   server.py            FastMCP server (tool registrations + instructions)
   models.py            normalized Paper model
+  aggregate.py         cross-source fusion (dedup + Reciprocal Rank Fusion)
   sources/
     base.py            source registry (get_source / list_sources)
     arxiv.py           arXiv Atom API + read_paper (HTML/markdown/latex)
     semanticscholar.py Semantic Scholar full API surface
+    openalex.py        OpenAlex REST API (works/authors/institutions/topics)
+    recognize.py       image→LaTeX client over the co-located recognize service
 pyproject.toml
 ```
 

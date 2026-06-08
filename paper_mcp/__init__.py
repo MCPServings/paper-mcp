@@ -5,4 +5,4 @@ search/fetch over the MCP streamable-HTTP transport. It is the skeleton the
 value layers (semantic retrieval, extraction, synthesis) plug into later.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
