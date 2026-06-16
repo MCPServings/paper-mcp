@@ -13,7 +13,7 @@ Plus a **unified `search_all`** that fuses all three corpora, and **image→LaTe
 
 ---
 
-## Tools (37)
+## Tools (38)
 
 ### Generic / source-agnostic (8)
 | Tool | Purpose |
@@ -28,6 +28,11 @@ Plus a **unified `search_all`** that fuses all three corpora, and **image→LaTe
 | `list_paper_sources()` | Available corpora. |
 
 `read_paper` fetch chain: `arxiv.org/html/{id}` → `ar5iv` fallback (markdown/html), or `arxiv.org/e-print/{id}` tarball main `.tex` (latex). Formulas are recovered from the LaTeXML `alttext` invariant.
+
+### Medical / evidence-graded (1)
+| Tool | Purpose |
+|---|---|
+| **`search_medical(query, study_types='rct,meta-analysis,systematic-review', year_from=0, max_results=10, fetch_fulltext=True)`** | **Clinical literature search.** Queries PubMed, filters by research type via Publication-Type tags and re-ranks by the **evidence pyramid** (meta-analysis / systematic review > RCT > cohort > ...), so real trials surface above high-cited reviews/guidelines that pure-citation ranking floats up. Open-access full text is attached from Europe PMC by PMID. If the type filter yields nothing it auto-relaxes (flagged `filter_relaxed`). `query` is English keyword/boolean text — do NL/multilingual query understanding upstream. Backed by NCBI E-utilities + Europe PMC (both free, no key required). |
 
 ### Image → LaTeX (3)
 Turn a formula or table image back into LaTeX (e.g. a figure cropped from a paper) without needing your own vision model. Backed by the co-located recognize service (PaddleOCR-VL / DeepSeek-OCR / texify).
