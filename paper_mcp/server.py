@@ -12,6 +12,7 @@ Tools (baseline):
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import os
 import re
 import threading
@@ -24,6 +25,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
 from .aggregate import fuse
+from .medical import parse_study_types, search_medical_impl
 from .models import Paper
 from .sources import DEFAULT_SOURCE, get_source, list_sources
 from .sources import recognize
@@ -46,6 +48,14 @@ _INSTRUCTIONS = (
     "found it) and an `ids` map you can hand to get_paper/read_paper. Use it "
     "as the default broad search; use `search_papers` when you want one "
     "specific corpus or arxiv field syntax.\n"
+    "  1c. `search_medical(query=..., study_types='rct,meta-analysis,"
+    "systematic-review', max_results=10)` for CLINICAL/biomedical questions: "
+    "searches PubMed, filters by research type via Publication-Type tags and "
+    "re-ranks by the evidence pyramid (meta-analysis / systematic review > "
+    "RCT > cohort > ...), so real trials surface above high-cited reviews. "
+    "Open-access full text is attached from Europe PMC. Prefer it over "
+    "search_all for medicine; pass English keyword text (do NL/multilingual "
+    "query understanding yourself).\n"
     "  2. `get_paper(paper_id=..., source='arxiv')` for one paper's full "
     "record. For s2, id accepts S2 id / `DOI:` / `ARXIV:` / `CorpusId:`.\n"
     "  3. `search_by_author(author=..., source='arxiv')` newest first.\n"
@@ -326,6 +336,53 @@ async def search_all(
         "count": min(len(fused), max_results),
         "results": [_merged_hit(g) for g in fused[:max_results]],
     }
+
+
+@mcp.tool(description="Evidence-graded MEDICAL literature search (PubMed + "
+          "Europe PMC). Unlike search_all (generic, ranks high-cited reviews/"
+          "guidelines above trials), this filters by research type via PubMed "
+          "Publication-Type tags and re-ranks by the evidence pyramid "
+          "(meta-analysis / systematic review > RCT > cohort > ...), so the "
+          "actual clinical trials surface first. Open-access full text is "
+          "pulled from Europe PMC by PMID. `query` should be English keyword/"
+          "boolean text (PubMed maps it); do natural-language/multilingual "
+          "understanding upstream. Returns hits with pmid/doi/study_type/"
+          "evidence_level/citations/abstract and, when open-access, fulltext.")
+async def search_medical(
+    query: str,
+    study_types: str = "rct,meta-analysis,systematic-review",
+    year_from: int = 0,
+    max_results: int = 10,
+    fetch_fulltext: bool = True,
+) -> dict:
+    """Search PubMed for clinical evidence, evidence-graded.
+
+    Args:
+        query: English keyword/boolean text PubMed can map (not a raw
+            natural-language question — translate that upstream).
+        study_types: Comma-separated research types to keep, mapped to PubMed
+            [pt] filters. Names/aliases: rct, meta-analysis, systematic-review,
+            guideline, review, observational. Empty string = no type filter.
+        year_from: Only papers published this year or later (0 = no limit).
+        max_results: 1–50 returned after evidence re-ranking.
+        fetch_fulltext: Pull Europe PMC open-access full text for the top hits.
+    """
+    max_results = max(1, min(max_results, 50))
+    study_keys = parse_study_types(study_types)
+    try:
+        return await search_medical_impl(
+            query=query,
+            study_keys=study_keys,
+            year_from=year_from or None,
+            max_results=max_results,
+            fetch_fulltext=fetch_fulltext,
+            fulltext_max_chars=24000,
+            this_year=_dt.date.today().year,
+        )
+    except ValueError as exc:
+        return {"query": query, "error": str(exc)}
+    except httpx.HTTPError as exc:
+        return {"query": query, "error": f"upstream error: {exc}"}
 
 
 @mcp.tool(description="Fetch one paper by id, with full abstract and PDF link.")
