@@ -1,8 +1,8 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.MCPServings/paper-mcp",
-  "title": "Paper Search (arXiv + Semantic Scholar + OpenAlex)",
-  "description": "Search arXiv, Semantic Scholar & OpenAlex, read full arXiv text, evidence-graded medical search (PubMed + Europe PMC), plus image-to-LaTeX OCR.",
+  "title": "Paper Search (arXiv + Semantic Scholar + OpenAlex + Medical)",
+  "description": "Search arXiv, Semantic Scholar, OpenAlex + medical evidence (PubMed/Europe PMC) + image-to-LaTeX.",
   "repository": {
     "url": "https://github.com/MCPServings/paper-mcp",
     "source": "github"
