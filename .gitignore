@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+
+# mcp-publisher login credentials — never commit
+.mcpregistry_*
