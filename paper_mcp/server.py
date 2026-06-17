@@ -546,9 +546,11 @@ async def lint_latex(code: str) -> dict:
           "(great for papers behind no open-access full text — give the user's "
           "PDF and get readable text back). Provide pdf_url (downloaded "
           "server-side, SSRF-guarded) OR pdf_base64. formula/table toggle "
-          "math/table reconstruction. Submits the job and polls to completion, "
-          "returning {task_id, cached, content, chars}. Note: MinerU is "
-          "GPU-heavy; a fresh large PDF can take minutes.")
+          "math/table reconstruction. Returns {task_id, status, cached, content, "
+          "chars}: a recently-seen (cached) or small PDF comes back with `content` "
+          "in one call; a fresh PDF (MinerU is GPU-heavy, minutes) returns "
+          "status='running' + a task_id — then call extract_pdf_result(task_id) to "
+          "fetch the text.")
 async def extract_pdf(
     pdf_url: str = "",
     pdf_base64: str = "",
@@ -563,6 +565,18 @@ async def extract_pdf(
             formula=formula,
             table=table,
         )
+    except latextools.LatexToolsError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(description="Fetch the result of an extract_pdf job by task_id. Returns "
+          "{task_id, status, content, chars}: `content` is the extracted text once "
+          "status='done'; while still 'running' content is null — call again "
+          "shortly. Results expire server-side, so fetch reasonably soon.")
+async def extract_pdf_result(task_id: str) -> dict:
+    """Fetch an extract_pdf job's text by task_id (poll until status='done')."""
+    try:
+        return await latextools.extract_pdf_result(task_id)
     except latextools.LatexToolsError as exc:
         return {"error": str(exc)}
 

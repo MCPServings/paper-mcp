@@ -30,7 +30,13 @@ _USER_AGENT = "paper-mcp/0.5 (+https://latex-tools.online/mcp)"
 
 _MAX_PDF_BYTES = 50 * 1024 * 1024  # cap a downloaded PDF
 _PDF_POLL_INTERVAL = 2.0
-_PDF_POLL_TIMEOUT = 300.0  # MinerU can be slow on big PDFs
+# extract_pdf submits then polls inline only briefly: cached / small PDFs come
+# back with text in one call, while a fresh GPU job (MinerU, minutes) hands back
+# a task_id so the caller isn't blocked past an MCP client's tool timeout.
+_PDF_INLINE_POLL = 28.0
+
+_PDF_DONE = ("done", "success", "completed", "finished")
+_PDF_RUNNING = ("pending", "running", "processing", "queued")
 
 
 class LatexToolsError(Exception):
@@ -120,19 +126,39 @@ async def _pdf_submit(client: httpx.AsyncClient, pdf: bytes,
     return resp.json()
 
 
+async def _pdf_status(client: httpx.AsyncClient, task_id: str, fallback: str) -> str:
+    try:
+        r = await client.get(f"{_PDF_URL}/status/{task_id}")
+        if r.status_code == 200:
+            return (r.json() or {}).get("status", fallback)
+    except httpx.HTTPError:
+        pass  # transient; caller keeps its current view of the status
+    return fallback
+
+
+async def _pdf_latex(client: httpx.AsyncClient, task_id: str) -> str:
+    res = await client.get(f"{_PDF_URL}/latex/{task_id}")
+    if res.status_code != 200:
+        raise LatexToolsError(f"latex fetch failed: HTTP {res.status_code}")
+    return res.text
+
+
 async def extract_pdf(
     pdf_url: str | None = None,
     pdf_base64: str | None = None,
     formula: bool = True,
     table: bool = True,
 ) -> dict:
-    """Extract a PDF to clean Markdown/LaTeX text via MinerU (submit + poll).
+    """Submit a PDF for MinerU extraction; return text if it finishes fast.
 
     Provide ``pdf_url`` (downloaded server-side, SSRF-guarded) or ``pdf_base64``.
-    ``formula`` / ``table`` toggle math / table reconstruction. Submits the job
-    and polls to completion, returning ``{task_id, cached, content, chars}``
-    where ``content`` is the UTF-8 text extraction. Note: MinerU is GPU-heavy,
-    so a fresh (uncached) large PDF can take minutes.
+    ``formula`` / ``table`` toggle math / table reconstruction. The job is
+    content-addressed, so an identical PDF that was extracted recently comes
+    back instantly from cache. We poll inline only briefly: if the job is done
+    within the window you get ``{status:'done', content, chars, ...}``; a fresh
+    PDF (MinerU is GPU-heavy, minutes) instead returns ``{status:'running',
+    task_id, ...}`` — call :func:`extract_pdf_result` with that ``task_id`` to
+    fetch the text once it's ready.
     """
     import base64 as _b64
     if pdf_base64:
@@ -152,34 +178,58 @@ async def extract_pdf(
         task_id = sub.get("task_id")
         if not task_id:
             raise LatexToolsError("pdf-extract did not return a task_id")
-
-        # Poll until the job leaves the running/pending state.
-        deadline = asyncio.get_running_loop().time() + _PDF_POLL_TIMEOUT
+        cached = bool(sub.get("cached"))
         status = sub.get("status") or "pending"
-        while status in ("pending", "running", "processing", "queued"):
-            if asyncio.get_running_loop().time() > deadline:
-                raise LatexToolsError(f"pdf-extract timed out (task {task_id})")
+
+        # Brief inline poll — enough to return cached/small jobs in one call.
+        deadline = asyncio.get_running_loop().time() + _PDF_INLINE_POLL
+        while status in _PDF_RUNNING and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(_PDF_POLL_INTERVAL)
-            try:
-                r = await client.get(f"{_PDF_URL}/status/{task_id}")
-                status = (r.json() or {}).get("status", status) if r.status_code == 200 else status
-            except httpx.HTTPError:
-                pass  # transient; keep polling until the deadline
+            status = await _pdf_status(client, task_id, status)
 
-        if status not in ("done", "success", "completed", "finished"):
-            raise LatexToolsError(f"pdf-extract failed (task {task_id}, status {status})")
+        if status in _PDF_DONE:
+            content = await _pdf_latex(client, task_id)
+            return {"task_id": task_id, "status": "done", "cached": cached,
+                    "content": content, "chars": len(content)}
+        if status in _PDF_RUNNING:
+            return {"task_id": task_id, "status": status, "cached": cached,
+                    "content": None, "chars": 0,
+                    "note": "PDF still processing (MinerU is GPU-heavy; a fresh "
+                            "PDF can take a few minutes). Call "
+                            "extract_pdf_result(task_id) to fetch the text."}
+        raise LatexToolsError(f"pdf-extract failed (task {task_id}, status {status})")
 
-        # /result is a zip attachment (markdown + images); /latex is the clean
-        # UTF-8 text extraction. Agents want text, so read /latex.
-        res = await client.get(f"{_PDF_URL}/latex/{task_id}")
-        if res.status_code != 200:
-            raise LatexToolsError(f"result fetch failed: HTTP {res.status_code}")
-        content = res.text
 
-        out = {
-            "task_id": task_id,
-            "cached": bool(sub.get("cached")),
-            "content": content,
-            "chars": len(content),
-        }
-        return out
+async def extract_pdf_result(task_id: str) -> dict:
+    """Fetch the result of an :func:`extract_pdf` job by ``task_id``.
+
+    Returns ``{task_id, status, content, chars}``. ``content`` is the extracted
+    UTF-8 text once ``status == 'done'``; while the job is still running it is
+    ``None`` — call again shortly. Results expire after a while server-side, so
+    fetch reasonably soon after submitting.
+    """
+    if not (task_id or "").strip():
+        raise LatexToolsError("task_id must not be empty")
+    if not task_id.isalnum() or len(task_id) != 64:
+        raise LatexToolsError("task_id must be a 64-char hex digest")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            r = await client.get(f"{_PDF_URL}/status/{task_id}")
+        except httpx.HTTPError as exc:
+            raise LatexToolsError(f"pdf-extract unreachable: {exc}") from exc
+        if r.status_code == 404:
+            raise LatexToolsError("task not found or expired")
+        if r.status_code != 200:
+            raise LatexToolsError(f"status fetch failed: HTTP {r.status_code}")
+        info = r.json() or {}
+        status = info.get("status", "unknown")
+        if status in _PDF_DONE:
+            content = await _pdf_latex(client, task_id)
+            return {"task_id": task_id, "status": "done",
+                    "content": content, "chars": len(content)}
+        if status in _PDF_RUNNING:
+            return {"task_id": task_id, "status": status,
+                    "content": None, "chars": 0,
+                    "note": "still processing; call extract_pdf_result again shortly."}
+        raise LatexToolsError(
+            f"pdf-extract failed (status {status}): {info.get('error', '')}"[:200])
