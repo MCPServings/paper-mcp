@@ -9,11 +9,11 @@ Three corpora behind one normalized interface:
 - **`semanticscholar`** (alias `s2`) — the full S2 API surface: citation graph, authors, recommendations, full-text snippets, bulk datasets
 - **`openalex`** (alias `oa`) — 316M all-field works: citation graph, authors with h-index, institutions, topics, influence metrics
 
-Plus a **unified `search_all`** that fuses all three corpora, and **image→LaTeX** OCR tools.
+Plus a **unified `search_all`** that fuses all three corpora, **image→LaTeX** OCR, and **LaTeX lint + PDF→text** tooling.
 
 ---
 
-## Tools (38)
+## Tools (40)
 
 ### Generic / source-agnostic (8)
 | Tool | Purpose |
@@ -41,6 +41,13 @@ Turn a formula or table image back into LaTeX (e.g. a figure cropped from a pape
 | `recognize_formula(image_url=... or image_base64=..., model='deepseek-ocr')` | Formula image → LaTeX. `image_url` is downloaded server-side (with SSRF guards). Returns `{latex, model, elapsed_ms}`. |
 | `recognize_table(image_url=... or image_base64=..., model='deepseek-ocr')` | Table image → LaTeX `tabular`. |
 | `list_ocr_models()` | Available OCR models (`deepseek-ocr`, `paddleocr-vl`, `texify`). |
+
+### LaTeX tooling (2)
+Companions to the LaTeX/PDF web tools at `latex-tools.online` — same backends, exposed over MCP.
+| Tool | Purpose |
+|---|---|
+| `lint_latex(code)` | Check a LaTeX snippet for errors and return an auto-fixed version. Returns `{errors, fixed_code, summary_en, summary_zh, elapsed_ms}`. |
+| `extract_pdf(pdf_url=... or pdf_base64=..., formula=True, table=True)` | PDF → clean Markdown/LaTeX text via MinerU (useful for papers with no open-access full text). `pdf_url` is downloaded server-side (SSRF-guarded). Submits + polls to completion; returns `{task_id, cached, content, chars}`. MinerU is GPU-heavy, so a fresh large PDF can take minutes (results are cached). |
 
 ### OpenAlex (8)
 - **Works:** `get_openalex_work` · `get_openalex_citations` · `get_openalex_references` · `search_openalex_works` (filters: year range, open-access, min-citations, institution)
@@ -70,6 +77,7 @@ paper_mcp/
     semanticscholar.py Semantic Scholar full API surface
     openalex.py        OpenAlex REST API (works/authors/institutions/topics)
     recognize.py       image→LaTeX client over the co-located recognize service
+    latextools.py      lint + PDF-extract clients over the latex-tools services
 pyproject.toml
 ```
 

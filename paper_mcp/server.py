@@ -29,6 +29,7 @@ from .medical import parse_study_types, search_medical_impl
 from .models import Paper
 from .sources import DEFAULT_SOURCE, get_source, list_sources
 from .sources import recognize
+from .sources import latextools
 
 HOST = os.getenv("PAPER_MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("PAPER_MCP_PORT", "9400"))
@@ -523,6 +524,47 @@ async def recognize_table(
           "recognize_table.")
 def list_ocr_models() -> dict:
     return {"models": recognize.list_models(), "default": "deepseek-ocr"}
+
+
+# ---------------------------------------------------------------------------
+# LaTeX-tools companions (lint + PDF extraction). Back the latex-tools.online
+# web tools; exposed here so agents reach the same capabilities over MCP.
+# ---------------------------------------------------------------------------
+
+@mcp.tool(description="Lint a LaTeX snippet: report errors and return an "
+          "auto-fixed version. Input `code` (the LaTeX source). Returns "
+          "{errors, fixed_code, summary_en, summary_zh, elapsed_ms}.")
+async def lint_latex(code: str) -> dict:
+    """Check LaTeX for errors and return a fixed version."""
+    try:
+        return await latextools.lint_latex(code)
+    except latextools.LatexToolsError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool(description="Extract a PDF to clean Markdown/LaTeX text via MinerU "
+          "(great for papers behind no open-access full text — give the user's "
+          "PDF and get readable text back). Provide pdf_url (downloaded "
+          "server-side, SSRF-guarded) OR pdf_base64. formula/table toggle "
+          "math/table reconstruction. Submits the job and polls to completion, "
+          "returning {task_id, cached, content, chars}. Note: MinerU is "
+          "GPU-heavy; a fresh large PDF can take minutes.")
+async def extract_pdf(
+    pdf_url: str = "",
+    pdf_base64: str = "",
+    formula: bool = True,
+    table: bool = True,
+) -> dict:
+    """PDF → clean text (MinerU). Give pdf_url or pdf_base64."""
+    try:
+        return await latextools.extract_pdf(
+            pdf_url=pdf_url or None,
+            pdf_base64=pdf_base64 or None,
+            formula=formula,
+            table=table,
+        )
+    except latextools.LatexToolsError as exc:
+        return {"error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
