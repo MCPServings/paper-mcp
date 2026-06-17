@@ -2,6 +2,9 @@
 name = "paper-mcp"
 version = "0.5.0"
 description = "Remotely-callable MCP server: paper search (arXiv/Semantic Scholar/OpenAlex), medical evidence (PubMed/Europe PMC), and LaTeX/PDF tools."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "MCPServings" }]
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.27.0",

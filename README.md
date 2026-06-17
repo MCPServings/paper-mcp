@@ -105,3 +105,9 @@ PAPER_MCP_PORT=9400 python -m paper_mcp.server
 - arXiv calls are politely rate-limited + retried (`_USER_AGENT`, backoff).
 - `read_paper` covers ~80%+ of papers via official HTML; older scan-only papers may have no full text.
 - Moved here from the `docs` repo on 2026-06-07; that copy is gone.
+
+---
+
+## License
+
+MIT © MCPServings. See [LICENSE](LICENSE).
