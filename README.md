@@ -13,7 +13,7 @@ Plus a **unified `search_all`** that fuses all three corpora, **image→LaTeX** 
 
 ---
 
-## Tools (40)
+## Tools (41)
 
 ### Generic / source-agnostic (8)
 | Tool | Purpose |
@@ -42,12 +42,13 @@ Turn a formula or table image back into LaTeX (e.g. a figure cropped from a pape
 | `recognize_table(image_url=... or image_base64=..., model='deepseek-ocr')` | Table image → LaTeX `tabular`. |
 | `list_ocr_models()` | Available OCR models (`deepseek-ocr`, `paddleocr-vl`, `texify`). |
 
-### LaTeX tooling (2)
+### LaTeX tooling (3)
 Companions to the LaTeX/PDF web tools at `latex-tools.online` — same backends, exposed over MCP.
 | Tool | Purpose |
 |---|---|
 | `lint_latex(code)` | Check a LaTeX snippet for errors and return an auto-fixed version. Returns `{errors, fixed_code, summary_en, summary_zh, elapsed_ms}`. |
-| `extract_pdf(pdf_url=... or pdf_base64=..., formula=True, table=True)` | PDF → clean Markdown/LaTeX text via MinerU (useful for papers with no open-access full text). `pdf_url` is downloaded server-side (SSRF-guarded). Submits + polls to completion; returns `{task_id, cached, content, chars}`. MinerU is GPU-heavy, so a fresh large PDF can take minutes (results are cached). |
+| `extract_pdf(pdf_url=... or pdf_base64=..., formula=True, table=True)` | PDF → clean Markdown/LaTeX text via MinerU (useful for papers with no open-access full text). `pdf_url` is downloaded server-side (SSRF-guarded). Content-addressed + cached: a recently-seen or small PDF returns `content` in one call; a fresh PDF (MinerU is GPU-heavy, minutes) returns `status='running'` + a `task_id`. |
+| `extract_pdf_result(task_id)` | Fetch an `extract_pdf` job by `task_id`. Returns `content` once `status='done'`; while `'running'`, `content` is null — call again shortly. |
 
 ### OpenAlex (8)
 - **Works:** `get_openalex_work` · `get_openalex_citations` · `get_openalex_references` · `search_openalex_works` (filters: year range, open-access, min-citations, institution)
