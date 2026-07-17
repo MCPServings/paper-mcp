@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import hashlib
+import hmac
 import os
 import re
 import threading
 import time
 from collections import defaultdict, deque
+from urllib.parse import parse_qs
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -109,34 +112,61 @@ mcp = FastMCP(
     transport_security=_TS,
 )
 
-# Per-IP rate limit for the MCP endpoint. MCP sessions are chatty (initialize +
-# tools/list + many tools/call, each a separate JSON-RPC POST), so the hourly
-# budget is generous: enough for several deep agent sessions, while blocking
-# scripted hammering of the shared inference / upstream backends.
+# MCP sessions are chatty (initialize + tools/list + many tools/call, each a
+# separate JSON-RPC POST), so each direct client or trusted Worker connection
+# gets a generous hourly budget. Worker traffic also has a shared ceiling.
 MCP_MAX_PER_HOUR = int(os.getenv("MCP_MAX_PER_HOUR", "300"))
+MCP_WORKER_MAX_PER_HOUR = int(os.getenv("MCP_WORKER_MAX_PER_HOUR", "300"))
+MCP_WORKER_SHARED_MAX_PER_HOUR = int(
+    os.getenv("MCP_WORKER_SHARED_MAX_PER_HOUR", "2400")
+)
 MCP_RATE_WINDOW_SEC = 3600.0
+MCP_RATE_COOLDOWN_SEC = float(os.getenv("MCP_RATE_COOLDOWN_SEC", "300"))
 
 
 class _RateLimitMiddleware:
-    """Pure-ASGI per-IP rate limit for the MCP endpoint.
+    """Pure-ASGI rate limit for direct and trusted Worker MCP traffic.
 
-    Counts JSON-RPC POSTs per client IP in a sliding hourly window and rejects
-    with HTTP 429 once the limit is exceeded. Implemented as pure ASGI (not
-    Starlette BaseHTTPMiddleware) so it never buffers the streamable-HTTP / SSE
-    response body.
+    Direct clients are bucketed by IP. A Worker request is accepted only when
+    nginx supplies ``X-MCP-Worker`` after validating the Cloudflare peer; its
+    connection key is immediately reduced to a process-local HMAC digest. Raw
+    query credentials are never retained. Implemented as pure ASGI so it never
+    buffers the streamable-HTTP / SSE response body.
     """
 
-    def __init__(self, app, *, max_per_hour: int, window: float = MCP_RATE_WINDOW_SEC):
+    _WORKER_SHARED_BUCKET = "worker:shared"
+
+    def __init__(
+        self,
+        app,
+        *,
+        max_per_hour: int,
+        worker_max_per_hour: int = MCP_WORKER_MAX_PER_HOUR,
+        worker_shared_max_per_hour: int = MCP_WORKER_SHARED_MAX_PER_HOUR,
+        window: float = MCP_RATE_WINDOW_SEC,
+        cooldown: float = MCP_RATE_COOLDOWN_SEC,
+    ):
         self.app = app
         self.max_per_hour = max_per_hour
+        self.worker_max_per_hour = worker_max_per_hour
+        self.worker_shared_max_per_hour = worker_shared_max_per_hour
         self.window = window
+        self.cooldown = cooldown
         self._lock = threading.Lock()
-        self._buckets: dict = defaultdict(lambda: deque(maxlen=max_per_hour * 2 + 32))
+        self._digest_key = os.urandom(32)
+        self._buckets: dict[str, deque] = defaultdict(deque)
+        self._blocked_until: dict[str, float] = {}
+        self._last_cleanup = time.monotonic()
 
     @staticmethod
-    def _client_ip(scope) -> str:
-        headers = {k.decode("latin-1").lower(): v.decode("latin-1")
-                   for k, v in scope.get("headers", [])}
+    def _headers(scope) -> dict[str, str]:
+        return {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+
+    @staticmethod
+    def _client_ip(scope, headers: dict[str, str]) -> str:
         xri = headers.get("x-real-ip")
         if xri:
             return xri.strip()
@@ -146,27 +176,85 @@ class _RateLimitMiddleware:
         client = scope.get("client")
         return client[0] if client else "0.0.0.0"
 
-    def _allow(self, ip: str) -> bool:
-        now = time.time()
+    def _worker_bucket(self, scope, worker: str) -> str:
+        query = scope.get("query_string", b"")
+        try:
+            params = parse_qs(
+                query.decode("latin-1"),
+                keep_blank_values=True,
+                max_num_fields=64,
+            )
+        except ValueError:
+            params = {}
+        connection_key = (params.get("api_key") or [""])[0]
+        material = f"{worker}\0{connection_key or 'anonymous'}".encode()
+        digest = hmac.new(self._digest_key, material, hashlib.sha256).hexdigest()
+        return f"worker:key:{digest}"
+
+    def _rate_buckets(self, scope, headers: dict[str, str]) -> list[tuple[str, int]]:
+        worker = headers.get("x-mcp-worker", "").strip().lower()
+        if worker:
+            return [
+                (self._WORKER_SHARED_BUCKET, self.worker_shared_max_per_hour),
+                (self._worker_bucket(scope, worker), self.worker_max_per_hour),
+            ]
+        return [(f"ip:{self._client_ip(scope, headers)}", self.max_per_hour)]
+
+    def _allow(self, buckets: list[tuple[str, int]]) -> tuple[bool, int]:
+        now = time.monotonic()
         with self._lock:
-            dq = self._buckets[ip]
-            while dq and now - dq[0] > self.window:
-                dq.popleft()
-            if len(dq) >= self.max_per_hour:
-                return False
-            dq.append(now)
-            return True
+            if now - self._last_cleanup >= min(self.window, 300.0):
+                for bucket, timestamps in list(self._buckets.items()):
+                    while timestamps and now - timestamps[0] >= self.window:
+                        timestamps.popleft()
+                    if (not timestamps and bucket != self._WORKER_SHARED_BUCKET
+                            and self._blocked_until.get(bucket, 0.0) <= now):
+                        del self._buckets[bucket]
+                self._blocked_until = {
+                    bucket: until
+                    for bucket, until in self._blocked_until.items()
+                    if until > now
+                }
+                self._last_cleanup = now
+
+            for bucket, _limit in buckets:
+                blocked_until = self._blocked_until.get(bucket, 0.0)
+                if blocked_until > now:
+                    return False, max(1, int(blocked_until - now + 0.999))
+                self._blocked_until.pop(bucket, None)
+
+            for bucket, limit in buckets:
+                timestamps = self._buckets[bucket]
+                while timestamps and now - timestamps[0] >= self.window:
+                    timestamps.popleft()
+                if len(timestamps) >= limit:
+                    next_slot = timestamps[0] + self.window
+                    blocked_until = max(next_slot, now + self.cooldown)
+                    self._blocked_until[bucket] = blocked_until
+                    return False, max(1, int(blocked_until - now + 0.999))
+
+            for bucket, _limit in buckets:
+                self._buckets[bucket].append(now)
+            return True, 0
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("method") != "POST":
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if not self._allow(self._client_ip(scope)):
+        headers = self._headers(scope)
+        method = scope.get("method")
+        is_worker_read = headers.get("x-mcp-worker") and method in {"GET", "HEAD"}
+        if method != "POST" and not is_worker_read:
+            await self.app(scope, receive, send)
+            return
+        allowed, retry_after = self._allow(self._rate_buckets(scope, headers))
+        if not allowed:
             body = (b'{"jsonrpc":"2.0","error":{"code":-32029,'
                     b'"message":"rate limit exceeded"},"id":null}')
             await send({"type": "http.response.start", "status": 429,
                         "headers": [(b"content-type", b"application/json"),
-                                    (b"retry-after", b"3600")]})
+                                    (b"cache-control", b"no-store"),
+                                    (b"retry-after", str(retry_after).encode())]})
             await send({"type": "http.response.body", "body": body})
             return
         await self.app(scope, receive, send)
@@ -1027,7 +1115,7 @@ def main() -> None:
 
     app = mcp.streamable_http_app()
     app.add_middleware(_RateLimitMiddleware, max_per_hour=MCP_MAX_PER_HOUR)
-    uvicorn.run(app, host=HOST, port=PORT)
+    uvicorn.run(app, host=HOST, port=PORT, access_log=False)
 
 
 if __name__ == "__main__":

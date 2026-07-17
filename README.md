@@ -98,12 +98,18 @@ PAPER_MCP_PORT=9400 python -m paper_mcp.server
 | `PAPER_MCP_PORT` | `9400` | |
 | `PAPER_MCP_PATH` | `/mcp` | |
 | `SEMANTIC_SCHOLAR_API_KEY` | — | optional; raises S2 rate limit. Set via `/etc/paper-mcp.env` in prod. |
+| `MCP_MAX_PER_HOUR` | `300` | Direct-client JSON-RPC POST budget per IP. |
+| `MCP_WORKER_MAX_PER_HOUR` | `300` | Trusted reverse-proxy Worker budget per HMAC-derived connection key. Raw keys are not retained. |
+| `MCP_WORKER_SHARED_MAX_PER_HOUR` | `2400` | Shared ceiling across all trusted Worker connections. |
+| `MCP_RATE_COOLDOWN_SEC` | `300` | Minimum fast-rejection cooldown after a bucket reaches its limit. |
 
 ---
 
 ## Deployment (latex-tools.online)
 - Runs as `paper-mcp.service` on the **latex-tools** server, WorkingDirectory `/opt/paper-mcp`, port 9400.
 - nginx reverse-proxies `https://latex-tools.online/mcp` → `127.0.0.1:9400/mcp`.
+- Worker-aware buckets activate only when a trusted reverse proxy overwrites `X-MCP-Worker` after validating the upstream platform. Never pass through a client-supplied value.
+- uvicorn access logging is disabled because legacy MCP clients may put connection keys and profiles in the endpoint URL. The reverse proxy must also log `$uri`, not `$request`, for the MCP route.
 - Secrets in `/etc/paper-mcp.env` (`SEMANTIC_SCHOLAR_API_KEY`).
 - systemd unit + env are backed up under `../deploy/` in this repo.
 
