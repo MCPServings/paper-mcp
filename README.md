@@ -98,6 +98,10 @@ PAPER_MCP_PORT=9400 python -m paper_mcp.server
 | `PAPER_MCP_PORT` | `9400` | |
 | `PAPER_MCP_PATH` | `/mcp` | |
 | `SEMANTIC_SCHOLAR_API_KEY` | — | optional; raises S2 rate limit. |
+| `MCP_MAX_PER_HOUR` | `300` | Direct-client JSON-RPC POST budget per IP. |
+| `MCP_WORKER_MAX_PER_HOUR` | `300` | Trusted reverse-proxy Worker budget per HMAC-derived connection key. Raw keys are not retained. |
+| `MCP_WORKER_SHARED_MAX_PER_HOUR` | `2400` | Shared ceiling across all trusted Worker connections. |
+| `MCP_RATE_COOLDOWN_SEC` | `300` | Minimum fast-rejection cooldown after a bucket reaches its limit. |
 
 ---
 
