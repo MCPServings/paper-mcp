@@ -106,21 +106,23 @@ PAPER_MCP_PORT=9400 python -m paper_mcp.server
 ---
 
 ## Deployment (latex-tools.online)
-- Runs as `paper-mcp.service` on the **latex-tools** server, WorkingDirectory `/opt/paper-mcp`, port 9400.
+- Runs as `paper-mcp.service` on **`tencent-us`** (`43.130.32.180`), WorkingDirectory `/opt/paper-mcp`, loopback port 9400.
 - nginx reverse-proxies `https://latex-tools.online/mcp` → `127.0.0.1:9400/mcp`.
 - Worker-aware buckets activate only when a trusted reverse proxy overwrites `X-MCP-Worker` after validating the upstream platform. Never pass through a client-supplied value.
 - uvicorn access logging is disabled because legacy MCP clients may put connection keys and profiles in the endpoint URL. The reverse proxy must also log `$uri`, not `$request`, for the MCP route.
 - Secrets in `/etc/paper-mcp.env` (`SEMANTIC_SCHOLAR_API_KEY`).
-- systemd unit + env are backed up under `../deploy/` in this repo.
+- Runtime systemd/nginx/env files are managed by the `tencent-us` operations backup, not by this source repository; never commit `/etc/paper-mcp.env`.
 
 ### Update flow
 This repo is the source of truth. The server runs an **independent copy** under `/opt/paper-mcp` (not auto-synced):
 ```bash
-# edit here → push → deploy
-scp -r paper_mcp/* latex-tools:/opt/paper-mcp/paper_mcp/
-ssh latex-tools 'systemctl restart paper-mcp'
-ssh latex-tools 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9400/mcp'  # 406 = healthy (needs JSON-RPC handshake)
+# edit here → push → deploy the complete canonical Python package
+rsync -a --delete paper_mcp/ tencent-us:/opt/paper-mcp/paper_mcp/
+ssh tencent-us 'systemctl restart paper-mcp'
+ssh tencent-us 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9400/mcp'  # 406 = healthy (needs JSON-RPC handshake)
 ```
+
+Production parity verified on 2026-07-23: `main@07f6bbe8622aa063f56ee222a40d19c5d4264048` matches all 12 deployed Python source files byte-for-byte. The older copy embedded in `latex-tools-deploy/paper-mcp/` is not a deployment source.
 
 ## Notes
 - arXiv calls are politely rate-limited + retried (`_USER_AGENT`, backoff).
