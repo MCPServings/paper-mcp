@@ -78,7 +78,7 @@ paper_mcp/
     semanticscholar.py Semantic Scholar full API surface
     openalex.py        OpenAlex REST API (works/authors/institutions/topics)
     recognize.py       image→LaTeX client over the co-located recognize service
-    latextools.py      lint + PDF-extract clients over the latex-tools services
+    latextools.py      lint + PDF-extract clients over the latex-tools.online services
 pyproject.toml
 ```
 

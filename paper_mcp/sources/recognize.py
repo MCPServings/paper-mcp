@@ -1,5 +1,5 @@
-"""Formula / table image recognition — a thin client over the latex-tools
-``/api/recognize`` service that already runs on the same host.
+"""Formula / table image recognition — a thin client over the latex-tools.online
+``/api/recognize`` service that runs alongside this server.
 
 This is a free companion capability for the paper pipeline: once an agent has
 a figure or a cropped equation (e.g. from a paper it is reading) it can turn

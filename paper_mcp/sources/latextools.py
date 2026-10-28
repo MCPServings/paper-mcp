@@ -1,6 +1,6 @@
 """LaTeX-tools companion services — lint & PDF extraction.
 
-Thin MCP clients over two services that already run on the latex-tools host and
+Thin MCP clients over two services that run alongside this server and
 back the latex-tools.online web tools (/lint, /pdf):
 
   * **lint**  — LaTeX linter on the recognize service (127.0.0.1:8502/api/lint):
