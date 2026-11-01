@@ -110,6 +110,9 @@ mcp = FastMCP(
     port=PORT,
     streamable_http_path=PATH,
     transport_security=_TS,
+    # Tools keep no per-session state; stateless avoids 400 "Received request
+    # before initialization was complete" when a client races initialize.
+    stateless_http=True,
 )
 
 # MCP sessions are chatty (initialize + tools/list + many tools/call, each a
