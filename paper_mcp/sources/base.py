@@ -7,9 +7,14 @@ putting a semantic-retrieval brain in front of one) needs no server change.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Protocol, runtime_checkable
 
 from ..models import Paper
+
+# Who is calling the MCP server (client IP, or a digest for trusted Worker traffic). Set per request by the
+# server's rate-limit middleware; sources backed by a per-user rate-limited service forward it.
+CALLER: ContextVar[str | None] = ContextVar("paper_mcp_caller", default=None)
 
 
 @runtime_checkable

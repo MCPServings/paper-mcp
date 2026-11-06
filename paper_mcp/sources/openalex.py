@@ -8,6 +8,10 @@ domain), so wrapping it carries no licensing strings.
 We use the *polite pool* (a ``mailto`` query param, no API key needed) and the
 same retry/backoff discipline as the arXiv source. Abstracts come back as an
 inverted index, which we reconstruct to plain text.
+
+``OPENALEX_BASE`` points the client at an OpenAlex-compatible mirror instead of
+api.openalex.org. The mirror rate-limits per end user, so the caller identity is
+forwarded as ``X-Real-IP``; a daily-quota 429 is reported to the user as is.
 """
 from __future__ import annotations
 
@@ -17,8 +21,11 @@ import os
 import httpx
 
 from ..models import Paper
+from .base import CALLER
 
-_BASE = "https://api.openalex.org"
+_OFFICIAL = "https://api.openalex.org"
+_BASE = (os.getenv("OPENALEX_BASE") or _OFFICIAL).rstrip("/")
+_MIRROR = _BASE != _OFFICIAL
 _USER_AGENT = "paper-mcp/0.1 (+https://latex-tools.online/mcp)"
 _RETRY_STATUS = {429, 500, 502, 503, 504}
 
@@ -332,6 +339,8 @@ class OpenAlexSource:
         clean = {k: v for k, v in params.items() if v is not None and v != ""}
         clean["mailto"] = self._mailto
         headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
+        if _MIRROR and CALLER.get():
+            headers["X-Real-IP"] = CALLER.get()
         last_exc: Exception | None = None
         async with httpx.AsyncClient(
             timeout=self._timeout, follow_redirects=True, headers=headers
@@ -344,6 +353,15 @@ class OpenAlexSource:
                     last_exc = exc
                     await asyncio.sleep(backoff)
                     continue
+                if resp.status_code == 429 and _MIRROR:
+                    try:
+                        info = resp.json()
+                    except ValueError:
+                        info = {}
+                    if info.get("limit") == "per_second" and attempt < self._max_retries - 1:
+                        await asyncio.sleep(min(2.0, float(info.get("retry_after") or 1.0)) + 0.05)
+                        continue
+                    raise httpx.HTTPError(info.get("message") or "rate limit exceeded, try again later")
                 if resp.status_code in _RETRY_STATUS:
                     last_exc = httpx.HTTPStatusError(
                         f"OpenAlex returned {resp.status_code}",

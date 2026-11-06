@@ -33,6 +33,7 @@ from .models import Paper
 from .sources import DEFAULT_SOURCE, get_source, list_sources
 from .sources import recognize
 from .sources import latextools
+from .sources.base import CALLER
 
 HOST = os.getenv("PAPER_MCP_HOST", "127.0.0.1")
 PORT = int(os.getenv("PAPER_MCP_PORT", "9400"))
@@ -260,7 +261,12 @@ class _RateLimitMiddleware:
                                     (b"retry-after", str(retry_after).encode())]})
             await send({"type": "http.response.body", "body": body})
             return
-        await self.app(scope, receive, send)
+        worker = headers.get("x-mcp-worker", "").strip().lower()
+        token = CALLER.set(self._worker_bucket(scope, worker) if worker else self._client_ip(scope, headers))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            CALLER.reset(token)
 
 # arXiv field prefixes; if the query already uses one we pass it through as-is.
 _FIELD_RE = re.compile(r"\b(ti|au|abs|co|jr|cat|rn|id|all):", re.IGNORECASE)
