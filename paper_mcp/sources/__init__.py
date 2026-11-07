@@ -12,6 +12,7 @@ from .arxiv import ArxivSource
 from .base import PaperSource
 from .openalex import OpenAlexSource
 from .semanticscholar import SemanticScholarSource
+from .yongleji import YonglejiSource
 
 _SOURCES: dict[str, PaperSource] = {
     "arxiv": ArxivSource(),
@@ -19,6 +20,7 @@ _SOURCES: dict[str, PaperSource] = {
         api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY")
     ),
     "openalex": OpenAlexSource(mailto=os.getenv("OPENALEX_MAILTO")),
+    "yongleji": YonglejiSource(),
 }
 
 # Friendly aliases that resolve to a canonical source key.
@@ -30,6 +32,10 @@ _ALIASES = {
     "oa": "openalex",
     "open-alex": "openalex",
     "openalex.org": "openalex",
+    "yl": "yongleji",
+    "yongle": "yongleji",
+    "yongleji.com": "yongleji",
+    "永乐集": "yongleji",
 }
 
 DEFAULT_SOURCE = "arxiv"

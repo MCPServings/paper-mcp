@@ -41,13 +41,15 @@ PATH = os.getenv("PAPER_MCP_PATH", "/mcp")
 
 _INSTRUCTIONS = (
     "Academic paper search for AI agents, served at latex-tools.online/mcp.\n\n"
-    "Three corpora are available via the `source` argument: `arxiv` (default), "
-    "`semanticscholar` (alias `s2`), and `openalex` (alias `oa`).\n\n"
+    "Four corpora are available via the `source` argument: `arxiv` (default), "
+    "`semanticscholar` (alias `s2`), `openalex` (alias `oa`), and `yongleji` "
+    "(alias `yl`; ~465M works, relevance search is semantic and understands "
+    "questions in Chinese or English).\n\n"
     "Generic, source-agnostic tools:\n"
     "  1. `search_papers(query=..., source='arxiv', max_results=10, "
     "sort_by='relevance')` to find papers. For arxiv, `query` accepts plain "
     "text or field syntax like `ti:`, `au:`, `cat:cs.CL`, `abs:` + AND/OR.\n"
-    "  1b. `search_all(query=..., max_results=10)` searches ALL three corpora "
+    "  1b. `search_all(query=..., max_results=10)` searches ALL four corpora "
     "at once, de-duplicates the same work across them (by DOI/title) and "
     "re-ranks with Reciprocal Rank Fusion; each hit carries `sources` (who "
     "found it) and an `ids` map you can hand to get_paper/read_paper. Use it "
@@ -273,7 +275,7 @@ _FIELD_RE = re.compile(r"\b(ti|au|abs|co|jr|cat|rn|id|all):", re.IGNORECASE)
 _ABSTRACT_PREVIEW = 320
 
 # Corpora fused by `search_all` when the caller doesn't name specific ones.
-_AGG_SOURCES = ("arxiv", "semanticscholar", "openalex")
+_AGG_SOURCES = ("arxiv", "semanticscholar", "openalex", "yongleji")
 
 
 def _build_query(query: str, source: str = DEFAULT_SOURCE) -> str:
@@ -281,7 +283,7 @@ def _build_query(query: str, source: str = DEFAULT_SOURCE) -> str:
     if not q:
         raise ValueError("query must not be empty")
     # The `all:` prefix and field syntax (ti:/au:/cat:) are arXiv-specific; for
-    # other corpora (openalex, s2) we pass the plain text straight through.
+    # other corpora (openalex, s2, yongleji) we pass the plain text straight through.
     if source not in ("arxiv",):
         return q
     if _FIELD_RE.search(q):
@@ -322,7 +324,8 @@ async def search_papers(
 
     Args:
         query: Plain text, or arXiv field syntax (ti:/au:/cat:/abs: + AND/OR).
-        source: Corpus to search (currently: arxiv).
+        source: Corpus to search: arxiv, semanticscholar (s2), openalex (oa)
+            or yongleji (yl).
         max_results: 1–50.
         start: Offset for pagination.
         sort_by: relevance | newest | updated.
@@ -371,8 +374,8 @@ def _merged_hit(group: dict) -> dict:
     return hit
 
 
-@mcp.tool(description="Aggregated search across arXiv, Semantic Scholar and "
-          "OpenAlex at once. Fans out concurrently, de-duplicates the same "
+@mcp.tool(description="Aggregated search across arXiv, Semantic Scholar, "
+          "OpenAlex and Yongleji at once. Fans out concurrently, de-duplicates the same "
           "work across corpora (by DOI or title) and re-ranks with Reciprocal "
           "Rank Fusion, so papers found by several sources rank highest. Each "
           "hit lists which `sources` found it and an `ids` map "
@@ -381,7 +384,7 @@ def _merged_hit(group: dict) -> dict:
 async def search_all(
     query: str,
     max_results: int = 10,
-    sources: str = "arxiv,semanticscholar,openalex",
+    sources: str = "arxiv,semanticscholar,openalex,yongleji",
     per_source: int = 0,
 ) -> dict:
     """Search several corpora at once and return one fused, de-duplicated list.
@@ -390,7 +393,7 @@ async def search_all(
         query: Plain text. Field syntax (ti:/au:/cat:) only affects arXiv.
         max_results: 1–50 merged results to return.
         sources: Comma/space separated corpora to fuse (names or aliases:
-            arxiv, semanticscholar/s2, openalex/oa). Defaults to all three.
+            arxiv, semanticscholar/s2, openalex/oa, yongleji/yl). Defaults to all four.
         per_source: How many raw hits to pull from each corpus before fusing.
             0 (default) uses max(max_results, 10) to give the ranker material.
     """

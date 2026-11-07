@@ -70,6 +70,7 @@ def _reconstruct_abstract(inverted: dict | None) -> str:
 
 class OpenAlexSource:
     name = "openalex"
+    label = "OpenAlex"
 
     def __init__(
         self,
@@ -83,6 +84,9 @@ class OpenAlexSource:
                         or "api@latex-tools.online").strip()
         self._timeout = timeout
         self._max_retries = max_retries
+        self._base = _BASE
+        # Only a mirror (an address we were configured with) gets the caller's identity.
+        self._forward_caller = _MIRROR
 
     # ---- PaperSource protocol -------------------------------------------
     async def search(
@@ -337,9 +341,10 @@ class OpenAlexSource:
 
     async def _get(self, path: str, params: dict) -> dict:
         clean = {k: v for k, v in params.items() if v is not None and v != ""}
-        clean["mailto"] = self._mailto
+        if self._mailto:
+            clean["mailto"] = self._mailto
         headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
-        if _MIRROR and CALLER.get():
+        if self._forward_caller and CALLER.get():
             headers["X-Real-IP"] = CALLER.get()
         last_exc: Exception | None = None
         async with httpx.AsyncClient(
@@ -348,23 +353,26 @@ class OpenAlexSource:
             for attempt in range(self._max_retries):
                 backoff = min(2.0 * (attempt + 1), 10.0)
                 try:
-                    resp = await client.get(f"{_BASE}{path}", params=clean)
+                    resp = await client.get(f"{self._base}{path}", params=clean)
                 except httpx.TransportError as exc:
                     last_exc = exc
                     await asyncio.sleep(backoff)
                     continue
-                if resp.status_code == 429 and _MIRROR:
+                if resp.status_code == 429:
+                    # Per-user quota of an OpenAlex-compatible service: {"limit": "per_second"|"daily", ...}.
                     try:
                         info = resp.json()
                     except ValueError:
                         info = {}
-                    if info.get("limit") == "per_second" and attempt < self._max_retries - 1:
+                    which = info.get("limit") if isinstance(info, dict) else None
+                    if which == "per_second" and attempt < self._max_retries - 1:
                         await asyncio.sleep(min(2.0, float(info.get("retry_after") or 1.0)) + 0.05)
                         continue
-                    raise httpx.HTTPError(info.get("message") or "rate limit exceeded, try again later")
+                    if which in ("per_second", "daily"):
+                        raise httpx.HTTPError(info.get("message") or "rate limit exceeded, try again later")
                 if resp.status_code in _RETRY_STATUS:
                     last_exc = httpx.HTTPStatusError(
-                        f"OpenAlex returned {resp.status_code}",
+                        f"{self.label} returned {resp.status_code}",
                         request=resp.request, response=resp)
                     await asyncio.sleep(backoff)
                     continue

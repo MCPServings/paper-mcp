@@ -4,12 +4,13 @@
 
 Remotely-callable **MCP server for academic paper search, full-text retrieval & image→LaTeX**, served at `https://latex-tools.online/mcp`.
 
-Three corpora behind one normalized interface:
+Four corpora behind one normalized interface:
 - **`arxiv`** (default) — search, metadata, and **full-text** (HTML / markdown / LaTeX source)
 - **`semanticscholar`** (alias `s2`) — the full S2 API surface: citation graph, authors, recommendations, full-text snippets, bulk datasets
 - **`openalex`** (alias `oa`) — 316M all-field works: citation graph, authors with h-index, institutions, topics, influence metrics
+- **`yongleji`** (alias `yl`) — [Yongleji](https://yongleji.com), ~465M works; relevance search is semantic and understands questions in Chinese or English
 
-Plus a **unified `search_all`** that fuses all three corpora, **image→LaTeX** OCR, and **LaTeX lint + PDF→text** tooling.
+Plus a **unified `search_all`** that fuses all four corpora, **image→LaTeX** OCR, and **LaTeX lint + PDF→text** tooling.
 
 ---
 
@@ -18,7 +19,7 @@ Plus a **unified `search_all`** that fuses all three corpora, **image→LaTeX** 
 ### Generic / source-agnostic (8)
 | Tool | Purpose |
 |---|---|
-| **`search_all(query, max_results=10, sources='arxiv,semanticscholar,openalex')`** | **Unified search.** Fans out to all three corpora concurrently, de-duplicates the same work (by DOI/title) and re-ranks with Reciprocal Rank Fusion. Each hit carries `sources` (who found it) + an `ids` map for follow-up calls. Prefer this for broad lookups. |
+| **`search_all(query, max_results=10, sources='arxiv,semanticscholar,openalex,yongleji')`** | **Unified search.** Fans out to all four corpora concurrently, de-duplicates the same work (by DOI/title) and re-ranks with Reciprocal Rank Fusion. Each hit carries `sources` (who found it) + an `ids` map for follow-up calls. Prefer this for broad lookups. |
 | `search_papers(query, source='arxiv', max_results=10, sort_by='relevance')` | Single-corpus search. arXiv `query` accepts plain text or field syntax (`ti:` `au:` `cat:cs.CL` `abs:` + AND/OR). |
 | `get_paper(paper_id, source='arxiv')` | One paper's full record. S2 id accepts S2 id / `DOI:` / `ARXIV:` / `CorpusId:`. |
 | `search_by_author(author, source='arxiv')` | Papers by author, newest first. |
@@ -77,6 +78,7 @@ paper_mcp/
     arxiv.py           arXiv Atom API + read_paper (HTML/markdown/latex)
     semanticscholar.py Semantic Scholar full API surface
     openalex.py        OpenAlex REST API (works/authors/institutions/topics)
+    yongleji.py        Yongleji API (OpenAlex-style; semantic relevance search)
     recognize.py       image→LaTeX client over the co-located recognize service
     latextools.py      lint + PDF-extract clients over the latex-tools.online services
 pyproject.toml
@@ -98,6 +100,8 @@ PAPER_MCP_PORT=9400 python -m paper_mcp.server
 | `PAPER_MCP_PORT` | `9400` | |
 | `PAPER_MCP_PATH` | `/mcp` | |
 | `SEMANTIC_SCHOLAR_API_KEY` | — | optional; raises S2 rate limit. |
+| `OPENALEX_BASE` | `https://api.openalex.org` | optional OpenAlex-compatible mirror; the caller's IP is forwarded as `X-Real-IP` only to a mirror. |
+| `YONGLEJI_BASE` | `https://yongleji.com/v1` | optional other address of the Yongleji API; the caller's IP is forwarded as `X-Real-IP` only when set. Yongleji allows 100 calls a day and one per second per user. |
 | `MCP_MAX_PER_HOUR` | `300` | Direct-client JSON-RPC POST budget per IP. |
 | `MCP_WORKER_MAX_PER_HOUR` | `300` | Trusted reverse-proxy Worker budget per HMAC-derived connection key. Raw keys are not retained. |
 | `MCP_WORKER_SHARED_MAX_PER_HOUR` | `2400` | Shared ceiling across all trusted Worker connections. |
