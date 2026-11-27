@@ -28,6 +28,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from . import __version__
 from .aggregate import fuse
+from .client_log import ClientInfoLogMiddleware
 from .medical import parse_study_types, search_medical_impl
 from .models import Paper
 from .sources import DEFAULT_SOURCE, get_source, list_sources
@@ -1126,6 +1127,8 @@ def main() -> None:
     import uvicorn
 
     app = mcp.streamable_http_app()
+    # Inner to the rate limit: requests refused with 429 are not logged.
+    app.add_middleware(ClientInfoLogMiddleware)
     app.add_middleware(_RateLimitMiddleware, max_per_hour=MCP_MAX_PER_HOUR)
     uvicorn.run(app, host=HOST, port=PORT, access_log=False)
 
